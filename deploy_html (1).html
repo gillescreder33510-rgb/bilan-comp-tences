@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Bilan de compétences</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:system-ui,sans-serif;background:#f7f8fa;min-height:100vh}
+    #root{max-width:1400px;margin:0 auto;padding:1.5rem 1rem}
+    #loading{display:flex;align-items:center;justify-content:center;height:100vh;font-size:14px;color:#888;font-family:system-ui,sans-serif}
+  </style>
+</head>
+<body>
+<div id="loading">Chargement de l'application…</div>
+<div id="root" style="display:none"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+const BASE = [
+  {id:1,  col:"info",      title:"Questionnaire admin recueil des besoins",                                     tags:["Admin"],               done:false,url:"",note:""},
+  {id:2,  col:"info",      title:"Remettre le devis",                                                           tags:["Admin","Contractuel"],  done:false,url:"",note:""},
+  {id:3,  col:"info",      title:"Remettre la plaquette",                                                       tags:["Admin"],               done:false,url:"",note:""},
+  {id:4,  col:"info",      title:"Doc. « Se préparer à démarrer son bilan » — à compléter par le bénéficiaire",tags:["Pédagogique"],         done:false,url:"",note:""},
+  {id:5,  col:"demarrage", title:"Continuer la complétude du doc. « Se préparer à démarrer »",                 tags:["Pédagogique"],         done:false,url:"",note:""},
+  {id:6,  col:"demarrage", title:"Réaliser le planning prévisionnel",                                           tags:["Pédagogique"],         done:false,url:"",note:""},
+  {id:7,  col:"demarrage", title:"Réaliser et remettre l'annexe pédagogique",                                  tags:["Pédagogique"],         done:false,url:"",note:""},
+  {id:8,  col:"demarrage", title:"Contrat / Convention de réalisation — élaboration et signature",              tags:["Contractuel"],         done:false,url:"",note:""},
+  {id:9,  col:"demarrage", title:"Transmettre les conditions générales de vente",                               tags:["Contractuel"],         done:false,url:"",note:""},
+  {id:10, col:"encours",   title:"Feuille d'émargement — signature à chaque RV",                               tags:["Admin"],               done:false,url:"",note:""},
+  {id:11, col:"encours",   title:"Compte-rendu des entretiens individuels — à la fin de chaque RV",            tags:["Suivi"],               done:false,url:"",note:""},
+  {id:12, col:"encours",   title:"Rédiger le document de synthèse",                                             tags:["Pédagogique"],         done:false,url:"",note:""},
+  {id:13, col:"cloture",   title:"Remise du document de synthèse",                                              tags:["Pédagogique"],         done:false,url:"",note:""},
+  {id:14, col:"cloture",   title:"Attestation de fin de bilan",                                                 tags:["Admin","Contractuel"], done:false,url:"",note:""},
+  {id:15, col:"cloture",   title:"Questionnaire de satisfaction",                                               tags:["Évaluation"],          done:false,url:"",note:""},
+  {id:16, col:"cloture",   title:"Questionnaire de suivi à 6 mois",                                            tags:["Suivi"],               done:false,url:"",note:"À envoyer 6 mois après la fin du bilan"},
+];
+
+const COLS = [
+  {id:"info",      label:"RV info & avant démarrage", color:"#E24B4A", bg:"#FCEBEB"},
+  {id:"demarrage", label:"1er RV — démarrage",        color:"#185FA5", bg:"#E6F1FB"},
+  {id:"encours",   label:"Tout au long du bilan",     color:"#EF9F27", bg:"#FAEEDA"},
+  {id:"cloture",   label:"Clôture & suivi",           color:"#3B6D11", bg:"#EAF3DE"},
+];
+
+const TAGS = {
+  Admin:       {bg:"#EEEDFE",color:"#3C3489"},
+  Contractuel: {bg:"#FBEAF0",color:"#72243E"},
+  Pédagogique: {bg:"#EAF3DE",color:"#27500A"},
+  Suivi:       {bg:"#E1F5EE",color:"#085041"},
+  Évaluation:  {bg:"#FAEEDA",color:"#633806"},
+};
+
+const FILTERS = ["Tout","Admin","Contractuel","Pédagogique","Évaluation","Suivi"];
+const KEY = "bilan-creder-v1";
+const cp  = o => JSON.parse(JSON.stringify(o));
+const fmt = d => d ? new Date(d).toLocaleDateString("fr-FR") : "—";
+
+function get6mStatus(client) {
+  if (!client.endDate) return null;
+  const card = client.cards.find(x => x.id === 16);
+  if (card?.done) return {status:"done"};
+  const remind = new Date(client.endDate);
+  remind.setMonth(remind.getMonth() + 6);
+  const diff = Math.floor((remind - new Date()) / 86400000);
+  if (diff < 0)   return {status:"overdue", diff:Math.abs(diff), date:remind};
+  if (diff <= 30) return {status:"soon",    diff, date:remind};
+  return {status:"ok", diff, date:remind};
+}
+
+/* ── localStorage helpers ── */
+function loadData() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function saveData(obj) {
+  try { localStorage.setItem(KEY, JSON.stringify(obj)); } catch {}
+}
+
+/* ── GuidedSetup ── */
+function GuidedSetup({clientName, templateCards, onConfirm, onCancel}) {
+  const docsWithUrl = templateCards.filter(x=>x.url);
+  const docsNoUrl   = templateCards.filter(x=>!x.url);
+  const [newLinks, setNewLinks] = useState(()=>{const o={};docsWithUrl.forEach(x=>{o[x.id]="";});return o;});
+  const filled = docsWithUrl.filter(x=>newLinks[x.id]?.trim()).length;
+
+  function confirm() {
+    onConfirm(templateCards.map(x=>({...x,done:false,url:x.url?(newLinks[x.id]?.trim()||x.url):""})));
+  }
+
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 16px",overflowY:"auto"}}>
+      <div style={{background:"#fff",borderRadius:12,width:"100%",maxWidth:600,boxShadow:"0 8px 40px rgba(0,0,0,.2)",overflow:"hidden"}}>
+        <div style={{background:"#1d4ed8",padding:"18px 22px"}}>
+          <div style={{fontSize:15,fontWeight:700,color:"#fff",marginBottom:4}}>📁 Création — {clientName}</div>
+          <div style={{fontSize:12,color:"#93c5fd"}}>Pour chaque document : <strong style={{color:"#fff"}}>Ouvrir dans Drive ↗</strong> → Faire une copie → Coller le nouveau lien.</div>
+        </div>
+        <div style={{padding:"10px 22px",background:"#eff6ff",borderBottom:"1px solid #dbeafe",display:"flex",alignItems:"center",gap:12}}>
+          <div style={{flex:1,height:6,borderRadius:4,background:"#dbeafe",overflow:"hidden"}}>
+            <div style={{height:"100%",width:`${docsWithUrl.length?Math.round(filled/docsWithUrl.length*100):0}%`,background:"#1d4ed8",borderRadius:4,transition:"width .3s"}}/>
+          </div>
+          <span style={{fontSize:12,fontWeight:700,color:"#1d4ed8",whiteSpace:"nowrap"}}>{filled}/{docsWithUrl.length} liens</span>
+        </div>
+        <div style={{maxHeight:420,overflowY:"auto",padding:"14px 22px",display:"flex",flexDirection:"column",gap:8}}>
+          {docsWithUrl.length===0&&<div style={{fontSize:13,color:"#888",textAlign:"center",padding:"20px 0"}}>Aucun lien Drive dans le modèle.</div>}
+          {COLS.map(col=>{
+            const docs=docsWithUrl.filter(x=>x.col===col.id);
+            if(!docs.length)return null;
+            return(<div key={col.id}>
+              <div style={{display:"flex",alignItems:"center",gap:6,margin:"8px 0 6px"}}>
+                <span style={{width:8,height:8,borderRadius:2,background:col.color,display:"inline-block"}}/>
+                <span style={{fontSize:10,fontWeight:700,color:"#777",textTransform:"uppercase",letterSpacing:".05em"}}>{col.label}</span>
+              </div>
+              {docs.map(doc=>{
+                const val=newLinks[doc.id]||"";const ok=val.trim().length>0;
+                return(<div key={doc.id} style={{background:ok?"#f0fdf4":"#f8f8f8",border:`1px solid ${ok?"#86efac":"#e0e0e0"}`,borderLeft:`3px solid ${ok?"#3B6D11":col.color}`,borderRadius:8,padding:"9px 12px",marginBottom:6,transition:"all .2s"}}>
+                  <div style={{display:"flex",alignItems:"flex-start",gap:8,marginBottom:7}}>
+                    <div style={{width:16,height:16,borderRadius:4,border:ok?"2px solid #3B6D11":"2px solid #bbb",background:ok?"#3B6D11":"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:900,color:"#fff",flexShrink:0,marginTop:1}}>{ok?"✓":""}</div>
+                    <span style={{fontSize:12,color:"#222",flex:1,lineHeight:1.4,fontWeight:500}}>{doc.title}</span>
+                    <a href={doc.url} target="_blank" rel="noopener" style={{fontSize:11,padding:"4px 10px",borderRadius:6,background:"#eff6ff",border:"1px solid #93c5fd",color:"#1d4ed8",textDecoration:"none",fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>Ouvrir ↗</a>
+                  </div>
+                  <input value={val} onChange={e=>setNewLinks(p=>({...p,[doc.id]:e.target.value}))} placeholder="Coller le lien de la copie…"
+                    style={{width:"100%",fontSize:12,padding:"6px 9px",borderRadius:7,border:`1px solid ${ok?"#86efac":"#ddd"}`,background:"#fff",color:"#222",outline:"none",boxSizing:"border-box"}}/>
+                </div>);
+              })}
+            </div>);
+          })}
+          {docsNoUrl.length>0&&<div style={{marginTop:4}}>
+            <div style={{fontSize:10,fontWeight:700,color:"#bbb",textTransform:"uppercase",letterSpacing:".05em",marginBottom:6}}>Sans lien Drive (copiés tels quels)</div>
+            {docsNoUrl.map(d=><div key={d.id} style={{fontSize:12,color:"#ccc",padding:"4px 0",borderBottom:"1px solid #f5f5f5"}}>— {d.title}</div>)}
+          </div>}
+        </div>
+        <div style={{padding:"12px 22px",borderTop:"1px solid #eee",display:"flex",gap:10,alignItems:"center",justifyContent:"flex-end"}}>
+          {filled<docsWithUrl.length&&<span style={{fontSize:12,color:"#f59e0b",flex:1}}>⚠ {docsWithUrl.length-filled} lien(s) manquant(s) — modèle utilisé en fallback.</span>}
+          <button onClick={onCancel} style={{fontSize:13,padding:"7px 16px",borderRadius:8,border:"1px solid #ddd",background:"transparent",color:"#888",cursor:"pointer"}}>Annuler</button>
+          <button onClick={confirm} style={{fontSize:13,padding:"7px 20px",borderRadius:8,border:"none",background:"#1d4ed8",color:"#fff",cursor:"pointer",fontWeight:700}}>✓ Créer le dossier</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── PrintPreview ── */
+function PrintPreview({client, onClose}) {
+  const done = client.cards.filter(x=>x.done).length;
+  const pct  = Math.round(done/client.cards.length*100);
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:500,background:"#f3f4f6",overflowY:"auto"}}>
+      <style>{`@media print{.no-print{display:none!important}}`}</style>
+      <div className="no-print" style={{position:"sticky",top:0,zIndex:10,background:"#1d4ed8",padding:"10px 24px",display:"flex",alignItems:"center",gap:12}}>
+        <span style={{fontSize:14,fontWeight:700,color:"#fff",flex:1}}>Aperçu — {client.name}</span>
+        <button onClick={()=>window.print()} style={{fontSize:13,padding:"7px 18px",borderRadius:7,border:"none",background:"#fff",color:"#1d4ed8",cursor:"pointer",fontWeight:700}}>🖨 Imprimer / Enregistrer en PDF</button>
+        <button onClick={onClose} style={{fontSize:13,padding:"7px 14px",borderRadius:7,border:"1px solid rgba(255,255,255,.4)",background:"transparent",color:"#fff",cursor:"pointer"}}>✕ Fermer</button>
+      </div>
+      <div style={{maxWidth:760,margin:"30px auto",background:"#fff",borderRadius:10,boxShadow:"0 4px 24px rgba(0,0,0,.1)",padding:"40px 48px",minHeight:600}}>
+        <h1 style={{fontSize:20,color:"#1d4ed8",borderBottom:"2px solid #1d4ed8",paddingBottom:10,marginBottom:16}}>📋 Bilan de compétences — {client.name}</h1>
+        <div style={{display:"flex",gap:24,fontSize:12,color:"#888",marginBottom:6}}>
+          <span>📅 Début : <strong style={{color:"#333"}}>{fmt(client.startDate)}</strong></span>
+          <span>🏁 Fin prév. : <strong style={{color:"#333"}}>{fmt(client.endDate)}</strong></span>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:28}}>
+          <span style={{fontSize:12,color:"#888"}}>✅ {done}/{client.cards.length} documents traités</span>
+          <div style={{flex:1,maxWidth:200,height:6,borderRadius:4,background:"#e5e7eb",overflow:"hidden"}}>
+            <div style={{height:"100%",width:`${pct}%`,background:pct===100?"#3B6D11":"#1d4ed8",borderRadius:4}}/>
+          </div>
+          <span style={{fontSize:12,fontWeight:700,color:"#333"}}>{pct}%</span>
+        </div>
+        {COLS.map(col=>{
+          const cards=client.cards.filter(x=>x.col===col.id);
+          return(
+            <div key={col.id} style={{marginBottom:24}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,paddingBottom:6,borderBottom:`2px solid ${col.color}`}}>
+                <span style={{width:10,height:10,borderRadius:2,background:col.color,display:"inline-block"}}/>
+                <span style={{fontSize:13,fontWeight:700,color:"#333"}}>{col.label}</span>
+              </div>
+              {cards.map(c=>(
+                <div key={c.id} style={{display:"flex",gap:10,alignItems:"flex-start",padding:"7px 0",borderBottom:"1px solid #f5f5f5",opacity:c.done?.55:1}}>
+                  <div style={{width:15,height:15,borderRadius:3,border:`2px solid ${c.done?"#3B6D11":"#ccc"}`,background:c.done?"#3B6D11":"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:900,color:"#fff",flexShrink:0,marginTop:2}}>{c.done?"✓":""}</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,color:c.done?"#aaa":"#222",textDecoration:c.done?"line-through":"none",lineHeight:1.4}}>{c.title}</div>
+                    {c.url&&<div style={{fontSize:11,color:"#3b82f6",marginTop:2}}>🔗 <a href={c.url} style={{color:"#3b82f6"}}>{c.url}</a></div>}
+                    {c.note&&<div style={{fontSize:11,color:"#888",fontStyle:"italic",marginTop:2}}>{c.note}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+        <div style={{marginTop:30,fontSize:11,color:"#ccc",textAlign:"right",borderTop:"1px solid #f0f0f0",paddingTop:10}}>
+          Généré le {new Date().toLocaleDateString("fr-FR")} — CREDER Bilan de compétences
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══ APP ══ */
+function App() {
+  const [tmpl,       setTmpl]       = useState(cp(BASE));
+  const [clients,    setClients]    = useState([{name:"Exemple — Marie Dupont",cards:cp(BASE),startDate:"",endDate:""}]);
+  const [tab,        setTab]        = useState(0);
+  const [filter,     setFilter]     = useState("Tout");
+  const [panel,      setPanel]      = useState(null);
+  const [showNew,    setShowNew]    = useState(false);
+  const [newName,    setNewName]    = useState("");
+  const [guided,     setGuided]     = useState(null);
+  const [delIdx,     setDelIdx]     = useState(null);
+  const [printClient,setPrintClient]= useState(null);
+
+  const tmplRef    = useRef(tmpl);
+  const clientsRef = useRef(clients);
+  const tabRef     = useRef(tab);
+  useEffect(()=>{tmplRef.current=tmpl;},[tmpl]);
+  useEffect(()=>{clientsRef.current=clients;},[clients]);
+  useEffect(()=>{tabRef.current=tab;},[tab]);
+
+  /* ── Load from localStorage ── */
+  useEffect(()=>{
+    const d = loadData();
+    if (d) {
+      if (d.tmpl)            setTmpl(d.tmpl);
+      if (d.clients?.length) setClients(d.clients.map(c=>({startDate:"",endDate:"",...c})));
+      if (d.tab!==undefined) setTab(d.tab);
+    }
+    document.getElementById("loading").style.display = "none";
+    document.getElementById("root").style.display    = "block";
+  },[]);
+
+  function persist() {
+    saveData({tmpl:tmplRef.current, clients:clientsRef.current, tab:tabRef.current});
+  }
+
+  const isTmpl     = tab==="tmpl";
+  const isDashboard= tab==="dash";
+  const cidx       = (isTmpl||isDashboard) ? -1 : Number(tab);
+
+  /* ── Mutations ── */
+  function updateTmplCard(card){setTmpl(prev=>{const n=prev.map(x=>x.id===card.id?{...card}:x);tmplRef.current=n;persist();return n;});}
+  function updateClientCard(ci,card){setClients(prev=>{const n=prev.map((c,i)=>i===ci?{...c,cards:c.cards.map(x=>x.id===card.id?{...card}:x)}:c);clientsRef.current=n;persist();return n;});}
+  function toggleClientCard(ci,id){setClients(prev=>{const n=prev.map((c,i)=>i===ci?{...c,cards:c.cards.map(x=>x.id===id?{...x,done:!x.done}:x)}:c);clientsRef.current=n;persist();return n;});}
+  function updateClientMeta(ci,meta){setClients(prev=>{const n=prev.map((c,i)=>i===ci?{...c,...meta}:c);clientsRef.current=n;persist();return n;});}
+
+  function saveCard(card){
+    const t=tabRef.current;
+    if(t==="tmpl")updateTmplCard(card);
+    else updateClientCard(Number(t),card);
+    setPanel(p=>p?.id===card.id?{...card}:p);
+  }
+  function toggleCard(id){const t=tabRef.current;if(t!=="tmpl"&&t!=="dash")toggleClientCard(Number(t),id);}
+  function switchTab(t){setTab(t);tabRef.current=t;setFilter("Tout");setPanel(null);saveData({tmpl:tmplRef.current,clients:clientsRef.current,tab:t});}
+
+  function startCreate(){
+    const name=newName.trim();if(!name)return;
+    setShowNew(false);
+    if(tmplRef.current.some(x=>x.url))setGuided(name);
+    else finalizeCreate(name,cp(tmplRef.current).map(x=>({...x,done:false})));
+  }
+  function finalizeCreate(name,cards){
+    setGuided(null);setNewName("");
+    setClients(prev=>{
+      const n=[...prev,{name,cards,startDate:"",endDate:""}];
+      clientsRef.current=n;const ni=n.length-1;setTab(ni);tabRef.current=ni;
+      saveData({tmpl:tmplRef.current,clients:n,tab:ni});return n;
+    });
+    setFilter("Tout");setPanel(null);
+  }
+  function delClient(idx){
+    setClients(prev=>{
+      const n=prev.filter((_,i)=>i!==idx);
+      if(!n.length)n.push({name:"Nouveau client",cards:cp(tmplRef.current).map(x=>({...x,done:false})),startDate:"",endDate:""});
+      clientsRef.current=n;const ni=Math.min(idx,n.length-1);setTab(ni);tabRef.current=ni;
+      saveData({tmpl:tmplRef.current,clients:n,tab:ni});return n;
+    });
+    setDelIdx(null);setPanel(null);
+  }
+
+  function tabBadge(cl){
+    const s=get6mStatus(cl);
+    if(!s||s.status==="ok"||s.status==="done")return null;
+    return <span style={{marginLeft:4,fontSize:10,padding:"1px 5px",borderRadius:20,fontWeight:700,background:s.status==="overdue"?"#fee2e2":"#fef3c7",color:s.status==="overdue"?"#dc2626":"#92400e"}}>6m</span>;
+  }
+
+  const currentCards = (isTmpl||isDashboard)?tmpl:(clients[cidx]?.cards??[]);
+  const client       = (isDashboard||isTmpl)?null:clients[cidx];
+  const doneCnt      = currentCards.filter(x=>x.done).length;
+  const pct          = currentCards.length?Math.round(doneCnt/currentCards.length*100):0;
+
+  /* ── Dashboard ── */
+  function Dashboard() {
+    return (
+      <div>
+        <div style={{fontSize:13,color:"#888",marginBottom:16}}>Vue d'ensemble — {clients.length} dossier(s) client.</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:12}}>
+          {clients.map((cl,i)=>{
+            const d=cl.cards.filter(x=>x.done).length;
+            const p=cl.cards.length?Math.round(d/cl.cards.length*100):0;
+            const s6=get6mStatus(cl);
+            return(
+              <div key={i} onClick={()=>switchTab(i)}
+                style={{background:"#fff",border:"1px solid #e0e0e0",borderRadius:10,padding:"14px 16px",cursor:"pointer",transition:"box-shadow .15s"}}
+                onMouseEnter={e=>e.currentTarget.style.boxShadow="0 2px 12px rgba(0,0,0,.1)"}
+                onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
+                <div style={{fontWeight:700,fontSize:14,color:"#111",marginBottom:6,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <span>{cl.name}</span>
+                  {s6?.status==="overdue"&&<span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#fee2e2",color:"#dc2626",fontWeight:700}}>⚠ 6 mois dépassé</span>}
+                  {s6?.status==="soon"&&<span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#fef3c7",color:"#92400e",fontWeight:700}}>⏰ dans {s6.diff}j</span>}
+                  {s6?.status==="done"&&<span style={{fontSize:10,padding:"2px 7px",borderRadius:20,background:"#f0fdf4",color:"#3B6D11",fontWeight:700}}>✓ 6 mois fait</span>}
+                </div>
+                <div style={{display:"flex",gap:16,fontSize:12,color:"#888",marginBottom:10}}>
+                  <span>📅 {fmt(cl.startDate)}</span><span>🏁 {fmt(cl.endDate)}</span>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{flex:1,height:7,borderRadius:4,background:"#e5e7eb",overflow:"hidden"}}>
+                    <div style={{height:"100%",width:`${p}%`,background:p===100?"#3B6D11":"#1d4ed8",borderRadius:4,transition:"width .3s"}}/>
+                  </div>
+                  <span style={{fontSize:12,fontWeight:700,color:"#444",whiteSpace:"nowrap"}}>{d}/{cl.cards.length}</span>
+                </div>
+                {s6?.date&&s6.status!=="done"&&<div style={{fontSize:11,color:"#aaa",marginTop:6}}>Relance 6 mois : {s6.date.toLocaleDateString("fr-FR")}</div>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{fontFamily:"system-ui,sans-serif",minHeight:"100vh"}}>
+
+      {guided&&<GuidedSetup clientName={guided} templateCards={tmplRef.current} onConfirm={c=>finalizeCreate(guided,c)} onCancel={()=>{setGuided(null);setShowNew(false);setNewName("");}}/>}
+      {printClient&&<PrintPreview client={printClient} onClose={()=>setPrintClient(null)}/>}
+
+      {/* Header */}
+      <div style={{background:"#fff",borderBottom:"1px solid #eee",padding:"12px 20px",position:"sticky",top:0,zIndex:100}}>
+        <div style={{maxWidth:1400,margin:"0 auto",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          <span style={{fontSize:16,fontWeight:700,color:"#111",flex:1}}>📋 Bilan de compétences</span>
+          <button onClick={()=>switchTab("dash")} style={{fontSize:12,padding:"5px 12px",borderRadius:7,cursor:"pointer",fontWeight:700,border:isDashboard?"1px solid #0f766e":"1px solid #ddd",background:isDashboard?"#f0fdfa":"transparent",color:isDashboard?"#0f766e":"#888"}}>📊 Tableau de bord</button>
+          <button onClick={()=>switchTab("tmpl")} style={{fontSize:12,padding:"5px 12px",borderRadius:7,cursor:"pointer",fontWeight:700,border:isTmpl?"1px solid #7c3aed":"1px solid #ddd",background:isTmpl?"#f5f3ff":"transparent",color:isTmpl?"#7c3aed":"#888"}}>⚙ Modèle</button>
+          <span style={{color:"#ddd",fontSize:18,lineHeight:1}}>|</span>
+          {clients.map((cl,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:2}}>
+              <button onClick={()=>switchTab(i)} style={{fontSize:12,padding:"5px 12px",borderRadius:7,cursor:"pointer",border:tab===i?"1px solid #333":"1px solid #ddd",background:tab===i?"#111":"transparent",color:tab===i?"#fff":"#555",fontWeight:tab===i?700:400,display:"flex",alignItems:"center"}}>
+                {cl.name}{tabBadge(cl)}
+              </button>
+              {tab===i&&<button onClick={()=>setDelIdx(i)} style={{background:"none",border:"none",cursor:"pointer",color:"#ccc",fontSize:15,padding:"2px 3px",lineHeight:1}}>×</button>}
+            </div>
+          ))}
+          <button onClick={()=>setShowNew(true)} style={{fontSize:12,padding:"5px 12px",borderRadius:7,cursor:"pointer",border:"1px dashed #ccc",background:"transparent",color:"#888"}}>+ Nouveau client</button>
+        </div>
+      </div>
+
+      <div style={{maxWidth:1400,margin:"0 auto",padding:"1.25rem 1rem"}}>
+
+        {isTmpl&&<div style={{marginBottom:14,padding:"10px 14px",background:"#f5f3ff",borderRadius:8,border:"1px solid #c4b5fd",fontSize:13,color:"#7c3aed"}}><strong>Mode Modèle</strong> — Ajoutez vos liens Drive vierges. À la création d'un client, un assistant vous guidera pour dupliquer chaque fichier.</div>}
+
+        {showNew&&(
+          <div style={{marginBottom:14,padding:"12px 14px",background:"#f8f8f8",borderRadius:8,border:"1px solid #e0e0e0"}}>
+            <div style={{display:"flex",gap:7,alignItems:"center",marginBottom:8}}>
+              <input autoFocus value={newName} onChange={e=>setNewName(e.target.value)}
+                onKeyDown={e=>{if(e.key==="Enter")startCreate();if(e.key==="Escape"){setShowNew(false);setNewName("");}}}
+                placeholder="Nom du bénéficiaire…"
+                style={{flex:1,fontSize:13,padding:"6px 10px",borderRadius:7,border:"1px solid #ddd",background:"#fff",color:"#222",outline:"none"}}/>
+              <button onClick={startCreate} style={{fontSize:12,padding:"6px 14px",borderRadius:7,border:"none",background:"#1d4ed8",color:"#fff",cursor:"pointer",fontWeight:700}}>Suivant →</button>
+              <button onClick={()=>{setShowNew(false);setNewName("");}} style={{fontSize:12,padding:"6px 10px",borderRadius:7,border:"1px solid #ddd",background:"transparent",color:"#888",cursor:"pointer"}}>Annuler</button>
+            </div>
+            {tmplRef.current.some(x=>x.url)
+              ?<div style={{fontSize:12,color:"#1d4ed8"}}>📁 Un assistant vous guidera pour dupliquer les fichiers Drive.</div>
+              :<div style={{fontSize:12,color:"#f59e0b"}}>⚠ Aucun lien dans le modèle — ajoutez d'abord des liens dans ⚙ Modèle.</div>}
+          </div>
+        )}
+
+        {delIdx!==null&&(
+          <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:14,padding:"10px 12px",background:"#fff5f5",borderRadius:8,border:"1px solid #fca5a5"}}>
+            <span style={{fontSize:13,color:"#dc2626",flex:1}}>Supprimer « {clients[delIdx]?.name} » ?</span>
+            <button onClick={()=>delClient(delIdx)} style={{fontSize:12,padding:"5px 12px",borderRadius:7,border:"1px solid #dc2626",background:"transparent",color:"#dc2626",cursor:"pointer",fontWeight:700}}>Supprimer</button>
+            <button onClick={()=>setDelIdx(null)} style={{fontSize:12,padding:"5px 10px",borderRadius:7,border:"1px solid #ddd",background:"transparent",color:"#888",cursor:"pointer"}}>Annuler</button>
+          </div>
+        )}
+
+        {isDashboard&&<Dashboard/>}
+
+        {!isTmpl&&!isDashboard&&client&&(<>
+          <div style={{display:"flex",gap:12,alignItems:"flex-end",marginBottom:12,flexWrap:"wrap",padding:"12px 14px",background:"#f8f8f8",borderRadius:8,border:"1px solid #eee"}}>
+            <div>
+              <div style={{fontSize:10,color:"#888",textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>Date de début</div>
+              <input type="date" value={client.startDate||""} onChange={e=>updateClientMeta(cidx,{startDate:e.target.value})} style={{fontSize:12,padding:"5px 8px",borderRadius:7,border:"1px solid #ddd",background:"#fff",color:"#222",outline:"none"}}/>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:"#888",textTransform:"uppercase",letterSpacing:".05em",marginBottom:4}}>Fin prévisionnelle</div>
+              <input type="date" value={client.endDate||""} onChange={e=>updateClientMeta(cidx,{endDate:e.target.value})} style={{fontSize:12,padding:"5px 8px",borderRadius:7,border:"1px solid #ddd",background:"#fff",color:"#222",outline:"none"}}/>
+            </div>
+            {client.endDate&&(()=>{
+              const s=get6mStatus(client);if(!s)return null;
+              const styles={done:{bg:"#f0fdf4",color:"#3B6D11",label:"✓ Suivi 6 mois effectué"},ok:{bg:"#f0f9ff",color:"#0369a1",label:`📅 Relance 6 mois : ${s.date?.toLocaleDateString("fr-FR")}`},soon:{bg:"#fef3c7",color:"#92400e",label:`⏰ Relance dans ${s.diff} jour(s) !`},overdue:{bg:"#fee2e2",color:"#dc2626",label:`🚨 Relance 6 mois dépassée de ${s.diff} jour(s)`}};
+              const st=styles[s.status];
+              return <div style={{fontSize:12,padding:"5px 12px",borderRadius:8,background:st.bg,color:st.color,fontWeight:700,alignSelf:"center"}}>{st.label}</div>;
+            })()}
+            <button onClick={()=>setPrintClient(client)} style={{marginLeft:"auto",fontSize:12,padding:"6px 14px",borderRadius:7,border:"1px solid #ddd",background:"#fff",cursor:"pointer",color:"#444",display:"flex",alignItems:"center",gap:5,fontWeight:600}}>🖨 Exporter PDF</button>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+            <div style={{flex:1,minWidth:180}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                <span style={{fontSize:12,color:"#888"}}>Progression</span>
+                <span style={{fontSize:12,fontWeight:700,color:"#222"}}>{doneCnt}/{currentCards.length} ({pct}%)</span>
+              </div>
+              <div style={{height:6,borderRadius:4,background:"#e5e7eb",overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${pct}%`,background:pct===100?"#3B6D11":"#1d4ed8",borderRadius:4,transition:"width .3s"}}/>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+              {FILTERS.map(f=><button key={f} onClick={()=>setFilter(f)} style={{fontSize:11,padding:"3px 9px",borderRadius:20,cursor:"pointer",border:filter===f?"1px solid #333":"1px solid #ddd",background:filter===f?"#111":"transparent",color:filter===f?"#fff":"#888",fontWeight:filter===f?700:400}}>{f}</button>)}
+            </div>
+          </div>
+        </>)}
+
+        {isTmpl&&<div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:14}}>
+          {FILTERS.map(f=><button key={f} onClick={()=>setFilter(f)} style={{fontSize:11,padding:"3px 9px",borderRadius:20,cursor:"pointer",border:filter===f?"1px solid #7c3aed":"1px solid #ddd",background:filter===f?"#f5f3ff":"transparent",color:filter===f?"#7c3aed":"#888",fontWeight:filter===f?700:400}}>{f}</button>)}
+        </div>}
+
+        {!isDashboard&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10}}>
+          {COLS.map(col=>{
+            const colCards=currentCards.filter(x=>x.col===col.id&&(filter==="Tout"||x.tags.includes(filter)));
+            const colDone=colCards.filter(x=>x.done).length;
+            return(
+              <div key={col.id} style={{background:"#f5f5f5",borderRadius:10,border:"1px solid #e0e0e0",padding:10,minHeight:80}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}>
+                  <span style={{width:10,height:10,borderRadius:2,background:col.color,display:"inline-block",flexShrink:0}}/>
+                  <span style={{fontSize:11,fontWeight:700,color:"#333",flex:1,lineHeight:1.3}}>{col.label}</span>
+                  {!isTmpl&&<span style={{fontSize:10,padding:"2px 7px",borderRadius:20,fontWeight:700,background:col.bg,color:col.color,flexShrink:0}}>{colDone}/{colCards.length}</span>}
+                </div>
+                {colCards.map(card=>{
+                  const is6m=card.id===16&&!isTmpl;
+                  const s6=is6m?get6mStatus(client):null;
+                  return(
+                    <div key={card.id} style={{background:card.done?"#e0e0e0":"#fff",border:"1px solid #e0e0e0",borderLeft:`3px solid ${card.done?"#bbb":col.color}`,borderRadius:8,padding:"9px 10px",marginBottom:7,opacity:card.done?0.5:1,transition:"all .2s"}}>
+                      <div style={{display:"flex",alignItems:"flex-start",gap:8}}>
+                        {!isTmpl&&<div onClick={e=>{e.stopPropagation();toggleCard(card.id);}} style={{flexShrink:0,marginTop:2,width:20,height:20,borderRadius:5,cursor:"pointer",border:card.done?"2px solid #3B6D11":"2px solid #999",background:card.done?"#3B6D11":"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:900,color:"#fff",userSelect:"none",transition:"all .15s"}}>{card.done?"✓":""}</div>}
+                        <span onClick={()=>setPanel({...card})} style={{fontSize:12,flex:1,lineHeight:1.45,cursor:"pointer",color:card.done?"#999":"#222",textDecoration:card.done?"line-through":"none"}}>{card.title}</span>
+                        {card.url&&<span style={{fontSize:12,color:"#3b82f6",flexShrink:0,paddingTop:1}}>🔗</span>}
+                      </div>
+                      <div style={{display:"flex",flexWrap:"wrap",gap:3,marginTop:6,paddingLeft:isTmpl?0:28}}>
+                        {card.tags.map(t=><span key={t} style={{fontSize:10,padding:"1px 6px",borderRadius:20,fontWeight:700,background:TAGS[t]?.bg,color:TAGS[t]?.color}}>{t}</span>)}
+                        {s6?.status==="overdue"&&!card.done&&<span style={{fontSize:10,padding:"1px 6px",borderRadius:20,fontWeight:700,background:"#fee2e2",color:"#dc2626"}}>🚨 Dépassé</span>}
+                        {s6?.status==="soon"&&!card.done&&<span style={{fontSize:10,padding:"1px 6px",borderRadius:20,fontWeight:700,background:"#fef3c7",color:"#92400e"}}>⏰ Dans {s6.diff}j</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>}
+
+        {panel&&(
+          <div style={{position:"fixed",inset:0,zIndex:200,display:"flex",justifyContent:"flex-end"}} onClick={()=>setPanel(null)}>
+            <div onClick={e=>e.stopPropagation()} style={{width:340,height:"100%",background:"#fff",borderLeft:"1px solid #ddd",boxShadow:"-6px 0 24px rgba(0,0,0,0.13)",display:"flex",flexDirection:"column",gap:16,padding:20,overflowY:"auto",boxSizing:"border-box"}}>
+              <div style={{display:"flex",alignItems:"flex-start",gap:8}}>
+                <span style={{fontSize:14,fontWeight:700,color:"#111",flex:1,lineHeight:1.4}}>{panel.title}</span>
+                <button onClick={()=>setPanel(null)} style={{border:"none",background:"none",fontSize:22,cursor:"pointer",color:"#bbb",padding:0,lineHeight:1}}>×</button>
+              </div>
+              <hr style={{border:"none",borderTop:"1px solid #eee",margin:0}}/>
+              <div>
+                <p style={{fontSize:11,color:"#999",textTransform:"uppercase",letterSpacing:".06em",margin:"0 0 6px"}}>Phase</p>
+                <div style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"#222"}}>
+                  <span style={{width:10,height:10,borderRadius:2,background:COLS.find(c=>c.id===panel.col)?.color,display:"inline-block"}}/>
+                  {COLS.find(c=>c.id===panel.col)?.label}
+                </div>
+              </div>
+              <div>
+                <p style={{fontSize:11,color:"#999",textTransform:"uppercase",letterSpacing:".06em",margin:"0 0 6px"}}>Catégories</p>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                  {panel.tags.map(t=><span key={t} style={{fontSize:11,padding:"2px 8px",borderRadius:20,fontWeight:700,background:TAGS[t]?.bg,color:TAGS[t]?.color}}>{t}</span>)}
+                </div>
+              </div>
+              <hr style={{border:"none",borderTop:"1px solid #eee",margin:0}}/>
+              <div>
+                <p style={{fontSize:11,color:"#999",textTransform:"uppercase",letterSpacing:".06em",margin:"0 0 4px"}}>Lien vers le document</p>
+                {!isTmpl&&<p style={{fontSize:11,color:"#3b82f6",margin:"0 0 8px"}}>🔒 Lien propre à <strong>{clients[cidx]?.name}</strong></p>}
+                <div style={{display:"flex",gap:6,marginBottom:8}}>
+                  <input value={panel.url} onChange={e=>setPanel(p=>({...p,url:e.target.value}))} placeholder="Coller l'URL…" style={{flex:1,fontSize:12,padding:"6px 9px",borderRadius:7,border:"1px solid #ddd",background:"#f8f8f8",color:"#222",outline:"none"}}/>
+                  <button onClick={()=>saveCard(panel)} style={{fontSize:12,padding:"6px 10px",borderRadius:7,border:"1px solid #ccc",background:"#fff",cursor:"pointer",color:"#333",whiteSpace:"nowrap"}}>Enregistrer</button>
+                </div>
+                {panel.url?<a href={panel.url} target="_blank" rel="noopener" style={{display:"flex",alignItems:"center",justifyContent:"center",gap:6,padding:"9px",borderRadius:8,border:"1px solid #93c5fd",background:"#eff6ff",color:"#1d4ed8",textDecoration:"none",fontWeight:700,fontSize:13}}>🔗 Ouvrir le document</a>:<p style={{fontSize:12,color:"#ccc",fontStyle:"italic",margin:0}}>Aucun lien enregistré.</p>}
+              </div>
+              <div>
+                <p style={{fontSize:11,color:"#999",textTransform:"uppercase",letterSpacing:".06em",margin:"0 0 6px"}}>Note</p>
+                <textarea value={panel.note} onChange={e=>setPanel(p=>({...p,note:e.target.value}))} rows={3} placeholder="Ajouter une note…" style={{width:"100%",fontSize:12,padding:"7px 9px",borderRadius:7,border:"1px solid #ddd",background:"#f8f8f8",color:"#222",resize:"vertical",fontFamily:"inherit",boxSizing:"border-box",outline:"none"}}/>
+                <button onClick={()=>saveCard(panel)} style={{marginTop:6,fontSize:12,padding:"5px 12px",borderRadius:7,border:"1px solid #ccc",background:"#fff",cursor:"pointer",color:"#333"}}>Enregistrer</button>
+              </div>
+              {!isTmpl&&<>
+                <hr style={{border:"none",borderTop:"1px solid #eee",margin:0}}/>
+                <div onClick={()=>{const p={...panel,done:!panel.done};setPanel(p);saveCard(p);}} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:8,border:"1px solid #e0e0e0",background:"#f8f8f8",cursor:"pointer"}}>
+                  <div style={{width:22,height:22,borderRadius:5,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:900,border:panel.done?"2px solid #3B6D11":"2px solid #999",background:panel.done?"#3B6D11":"#fff",color:"#fff",transition:"all .15s"}}>{panel.done?"✓":""}</div>
+                  <span style={{fontSize:13,color:"#333"}}>{panel.done?"Document traité ✓":"Marquer comme traité"}</span>
+                </div>
+              </>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
